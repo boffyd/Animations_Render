@@ -1,0 +1,1103 @@
+---
+title: "MATH2406 Assignment 3 Ian Denness s3847644"
+author: "Ian Denness"
+date: "29/02/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Set up relevant libraries, 
+
+This step has been hidden, but involves ensuring that relevant libraries are active within the R environment.  It assumes that the packages have been loaded, and only need to be enabled.  Two key packages are dplyr for data and ggplot2 for visualisation.  These are basic ones to start off with which may be added to depending on the output required.
+
+```{r, include=FALSE}
+library(dplyr) # data manipulation
+library(ggplot2) # visualisation
+library(tidyr) # data manipulation
+library(readr) # data interogation
+library(skimr) # data interogation
+library("summarytools") #Useful for summary information, may require loading install.packages("summarytools")
+library(GGally) #my be required to be installed, used for ggpairs and visual snapshot of entire dataset
+library(car) #shapiro wilkes test for normality
+library(qwraps2) #used for meanci used later on
+library(expss) #install.packages("expss").  A quick way to make tables.
+library(rpart)
+library(rpart.plot)
+library(Metrics) #RMSE check on regression tree
+library(kableExtra) 
+
+```
+
+# Introduction
+
+Clean the R environment for any modified data sets of the same name from workspace.  This will allow the scripting to work through sequentially
+
+```{r}
+rm(list=ls())
+```
+
+# Import data into the work environment
+
+Now that the data is clean and relevant libraries are installed, import the data for the assignment.
+
+
+```{r}
+#import the data - datawrangling
+file_name <- "streaming_data.csv"
+stream_df = read.table(file_name, sep=",", header = TRUE)
+
+```
+Datafile imported, various filetypes available. 
+
+# Preliminary Review, Step 1 - Basic Review
+The information has been imported, what quick insights can be determine by inspecting the data.  Firstly, interogate the numbers, and base statistics. 
+```{r}
+#lets have a quick look at the data
+glimpse(stream_df)
+
+#there are two main groups, A and B, lets separate these for later analysis.
+streamA_df <- stream_df %>%
+  filter(group == "A")
+
+streamB_df <- stream_df %>%
+  filter(group == "B")
+
+#what can we tell by looking a bit deeper (requres loading skimr), its a really quick tool to see what the data is doing.
+skim(stream_df)
+group_by(stream_df, group) %>%
+  skim()
+```
+
+# Preliminary Review, Step 2 - Bias Potential 1 - Date Review
+
+The date quantities for Group A are 31 and for Group B 14.  Are we comparing data from the same time frame.  This is an important piece of information for future analyis.  Lets graphically review when the activities occur.  Should we narrow our focus.
+
+```{r}
+#Lets explore the dates and the impact this may have on the data.  I'm interested to see if the means for the groups changes over the time period.  I will group by date, and average, and then plot total hours and means
+fillcol <- "#4271AE"
+linecol <- "#1F3552"
+fillbox <- "#4271AE"
+linebox <- "#1F3552"
+
+stream_df_dates <- stream_df %>% 
+  select(date, hours_watched, group) %>% #make a smaller data set
+  group_by(date, group) %>%
+  mutate(mean = round(mean(hours_watched),2)) %>% #without group det. means
+  ungroup() %>%
+  select(date,group,mean) %>%
+  distinct() #we have duplicate data, lets simplify
+
+ggplot(stream_df_dates, aes(x = date, y = mean)) +
+  geom_col(fill = fillcol, colour = linecol) +
+  facet_wrap(~group) +
+  labs(x='Date', y='Mean')+
+  ggtitle("Scenario Comparisons") +
+  theme(axis.text.x=element_text(angle = -90, hjust = 0))
+```
+
+We know from the project brief that the trial started on the 18th July and its been verfied here, whats potentially problematic is comparing two data sets over different time periods as the time period itself may have been a factor in the change or lack there of in the measured variable (Hours Watched).  There are two options to move forward
+
+1. Isolate the two AB groups for the exact same time frame (easiest)
+
+2. Understand the statistical significance of the change in the two groups A before the trial and after the trial.  
+
+If there is no statistical difference we could keep group A across the whole time frame.  If we are comparing group A to group b across two different time regions, we can either focus on just the time frame or try to understand whether or not there is a statistically significant difference.
+
+
+Isolating Group A into two groups before and after the trial will allow a comparison of means which will allow insights into:
+
+1. Whether A during the trial is representative of the population
+
+2. Whether based on the above we believe there may be some external influences outside of the controlled experiment that may influence the outcome.
+
+```{r}
+#In analysising the data, is it fair to compare averages over different time frames, realistically not.  Its evident that the AB trial starts on the 18th July. What does the analysis on this data tell us.
+
+stream_df10 <- stream_df #master dataset for use later.
+
+stream_df10$date <- as.Date(stream_df10$date, format = "%d/%m") #allow selection of dates
+
+#lets create some data frames to help understand the data this.
+
+streamA_df_aligned <- stream_df %>%
+  filter(group == 'A')
+streamA_df_aligned$date <- as.Date(streamA_df_aligned$date, format = "%d/%m") 
+
+#allow selection of dates
+streamA_df_aligned <- streamA_df_aligned %>%
+  mutate(date_group = ifelse(date >= as.Date('2020-07-18'),"Aligned","Orig"))
+
+#visually we can compare the data
+ggplot(streamA_df_aligned, aes(x = date_group, y = hours_watched)) +
+  geom_boxplot(fill = fillbox, colour = linebox) +
+  labs(x="Aligned = Trial started, Orig = Before Trial", y="Hours Watched") +
+  ggtitle("Box Plot of hours watched, Control Group A Date Review") +
+  theme_bw()
+```
+
+Hard to tell, they look quite close visually.  Lets consider a statistical approach, before comparing means though, lets verify the suitability of the data for analysis.
+
+```{r}
+#lets consider the variation
+shapiro.test(streamA_df_aligned$hours_watched)
+leveneTest(hours_watched~as.factor(date_group), data=streamA_df_aligned, center=mean)
+```
+
+The data set for the A group is assumed to come from a normal distribution since the p-value of the Shapiro-Wilk test is greater than 0.05, additionally, variances are not different according to Levene's test (p-value greater than 0.05)
+
+Moving to an ANOVA our hypothesis is that the means of the groups before and after the test commencement date are the same.
+
+
+```{r}
+
+results <- aov(hours_watched~date_group, data=streamA_df_aligned)
+summary(results)
+```
+
+
+In this case the P value is >0.05 and we fail to reject the null hypothesis and conclude that the difference in the means is not statistically different and that the A portion in the test is representative of the population and that it is unlikely there are any external influences on the test.  Its proposed to align the dates for analysis of the AB test, aligning both A and B when considering whether or not there is a difference between the two groups.
+
+# Preliminary Review, Step 3 - Graphical Review of the key data
+We have identified that dates will bias the original data, lets review graphically whether or not there are any other potential areas for bias that may influence our recommendation.
+
+```{r}
+#graphically what quick insights can we get with ggpairs(), have ruled out dates and isolated the bias from this already.
+
+stream_no_dates_df <- stream_df %>% #remove dates from the chart
+  select(gender, age, social_metric, time_since_signup, demographic, group, hours_watched)
+
+ggpairs(stream_no_dates_df, mapping = aes(colour = group), binwidth = 15) +
+  labs(title="GGPAIRS() - Dataset")
+
+```
+
+#Preliminary Observations
+
+ - The means for the A+B and A for hours watched may be normal,
+ - There may be slight left skey to the social metric,
+ - The demographic has a drop in the middle section of the data through the control group.  
+ - There is a distinct difference between the gender ratios between the two groups as illustrated by the graphics and the skim data.  It will be worth reviewing these in a bit more detail as we move forward.
+ - There appears to be a correlation between Demographic and Age (Corr = 0.763)
+ - There is a smaller correlation between Age and Hours Watched (Corr = -0.573), suggesting a younger age bracket watches more content.
+ - There is a smaller correlation between Demographic and Hours Watched (Corr = -0.473) (this is interesting in that its a negative correlcation for both Age and Demographic, these may or may not be independent of each other, as they appear to have a strong correlation to each other.)
+ - There is an increase in the correlation of the social metric and hours watched for the control group
+ - Time since signup appears to have limited impact on the hours watched with a low correlation (Corr = -0.00575)
+ 
+# Preliminary Review, Step 4 -  Bias Potential 2, Gender.
+ 
+Lets consider the means of the population vs the means of the trial group B.  Has the selected group been selected to best represent the gender split amongst the population.  We know the proportion of the population and we can compare this expected outcome to the proportion sampled for group b, and group a during the trial period.
+
+```{r}
+#We can create a proportion table/dataframe to do this comparing all three sets, the population, and A and B during the test period.  Splitting the first data set is easy, then we need to split the first dataset, based on date, then group it into group and gender tallys.
+
+stream_pop_df <- stream_df %>% #first data set.
+  group_by(gender) %>%
+  tally() %>%
+  mutate(group = "All Data") %>%
+  ungroup() %>%
+  select(group,gender,n)
+
+stream_pop_df2 <- stream_df 
+
+#convert date to a date to allow filtering
+stream_pop_df2$date <- as.Date(stream_pop_df2$date, format = "%d/%m")
+
+stream_pop_df2 <- stream_pop_df2 %>%  
+  filter (date >= as.Date('2020-07-18')) %>% #filter for know date, as per chart.
+  group_by(group, gender) %>%
+  tally() %>%
+  ungroup()
+
+stream_pop_df2$group <- as.character(stream_pop_df2$group) #need all class types to be the same to combine into one table
+
+stream_pop <- rbind(stream_pop_df,stream_pop_df2) #combine the two datasets together and then determine the relative proportions for comparison.
+
+stream_pop <- stream_pop %>%
+  group_by(group) %>%
+  mutate(tot = sum(n)) %>%
+  mutate(prop = n/tot)
+
+#visually check the outcome across all groups.
+ggplot(stream_pop, aes(x = gender, y = prop)) +
+  geom_col(fill = fillcol, colour = linecol) +
+  facet_wrap(~group) +
+  labs(x='Gender', y='Proportion of Population')+
+  ggtitle("Gender Comparison across dataset - Trial Period") +
+  theme(axis.text.x=element_text(angle = 0, hjust = 0))
+```
+
+There is a clear visual bias here.  For group B compared to both Group A during the test period and the entire population is very much biased across the male population.  At the moment its unclear how this may affect the outcome.
+
+Whilst the proportions look out, lets consider the statistical significance.  The Chi Squared test will measure the discrepancy of the measured value, in this case the gender proportions against an expected value in this case it is assumed that the gender proportions between the two groups groups would be equivalent.  This is the null hypothesis is that the 
+
+```{r}
+#We want to create a table that tabulates gender and group for comparison.  With an even population distribution, they should be even.  We have compared Group A vs Group B due to the population bias presented by Group B on the total population.
+
+tbl <- table(stream_df$gender,stream_df$group)
+
+tbl %>%
+  kable() %>%
+  kable_styling()
+
+chisq.test(tbl)
+
+```
+
+As expected, the p-value is low and we can reject the null hypothesis which suggests that the expected distribution is consistent for the two groups (which supports our visual hypothesis).  What does this tell us, potentially the sample demographic was biased by males which incorrectly inflates the outcome measure (hours_watched)
+
+It will be worth considering the means for the gender before the trial as commenced to understand whether we think this selection bias influences the outcome.
+
+```{r}
+#COMPARE MEANS BETWEEN GENDER BEFORE THE TRIAL
+
+stream_df_pre <- stream_df
+stream_df_pre$date <- as.Date(stream_df_pre$date, format = "%d/%m") #allows filtering by date
+
+stream_df_pre <- stream_df_pre %>%
+  filter(date < as.Date('2020-07-18')) #filter for know date, as per chart.  No need to filter for groups as the B test hasn't commenced.
+
+fillbox <- "#4271AE"
+linebox <- "#1F3552"
+
+ggplot(stream_df_pre, aes(x = gender, y = hours_watched)) +
+  geom_boxplot(fill = fillbox, colour = linebox) +
+  labs(x="Gender", y="Hours Watched") +
+  ggtitle("Box Plot of hours watched - By Gender before the trial") +
+  theme_bw() +
+  geom_jitter()
+
+#Visually they look quite similar.  What does this look like statistically.
+```
+
+```{r}
+
+shapiro.test(stream_df_pre$hours_watched)
+leveneTest(hours_watched~gender, data=stream_df_pre, center=mean)
+
+#Test for normal and variance is good.
+
+results <- aov(hours_watched~gender, data=stream_df_pre)
+summary(results)
+
+#p-value is high, therefore we cannot reject the null hypothesis, and cannot conclude that the means are different.
+```
+
+The data set for the A group is assumed to come from a normal distribution since the p-value of the Shapiro-Wilk test is greater than 0.05, additionally, variances are not different according to Levene's test (p-value greater than 0.05)
+
+Moving to an ANOVA our hypothesis is that the means of the two genders before the test commencement are the same (which will approxiate the entire population).  
+
+```{r}
+results <- aov(hours_watched~gender, data=stream_df_pre)
+summary(results)
+
+#p-value is high, therefore we cannot reject the null hypothesis, and cannot conclude that the means are different.
+```
+
+We fail to reject the null hypothesis and for the A group before the trial, we cannot confirm that the means are different.  Can this assumption hold true for the test period.  At the moment its hard to say as we aren't clear on the treatment.
+
+Lets analyse the change in mean for the results.
+
+Visually breaking this down, lets see what the outcome is.  In this case we compare the mean of the gender to the mean of the Group B.
+
+
+```{r}
+#COMPARISON TO MEANS - GENDER
+stream_df_trial <- stream_df
+stream_df_trial$date <- as.Date(stream_df_trial$date, format = "%d/%m") #allows filtering by date
+
+stream_df_trial <- stream_df_trial %>%
+  filter(date >= as.Date('2020-07-18')) #filter for know date, as per chart.
+
+meanB <- mean(streamB_df$hours_watched) #creates a statistic for the mean of the hours watched for the entire group to be passed to the chart below.
+
+stream_df_trial4 <- stream_df_trial %>%
+  filter(group == 'B') %>%
+  group_by(gender) %>% 
+  mutate(mean_hours = mean(hours_watched)) %>% #summarised the mean for each gender
+  select(gender, mean_hours) %>% #simplify the set
+  distinct() %>% #get rid of duplicates
+  ungroup() %>%
+  mutate(diff = mean_hours - meanB) %>% #compare against meanB
+  mutate(outcome = ifelse(diff <0,'below','above'))
+
+
+ggplot(stream_df_trial4, aes(x=factor(gender), y=diff)) + 
+  geom_bar(stat='identity', aes(fill=outcome), width=.5)  +
+  scale_fill_manual(name="Hours Watched", 
+                    labels = c("Above Average", "Below Average"), 
+                    values = c("above"="#00ba38", "below"="#f8766d")) + 
+  labs(subtitle="Comparison to Group B Means - GENDER", 
+       title= "Diverging Bars",
+       x="Gender",
+       y="Difference of Gender Variable Mean to Population Mean") +
+  coord_flip()
+```
+
+Mean(F) = 4.904 n = 29
+Mean(M) = 4.781 n = 91
+Mean(Group B) = 4.81 n = 120 (Not adjusted for any bias)
+
+This is quite interesting.  The change in the mean for the males is below the mean for the group and the change in the mean for the females is above the mean for the group.  With a significant bias, it would be fair to say that this could influence the result.
+
+To counter this we can make a random selection of the male population to match that of the female population (we could match the proportions, but for simplicity we will match the actual population). We can then use the selected male population and the female population as our new test group to compare the change in the means.
+
+```{r}
+#THE GENDER SPLIT IS POTENTIALLY SIGNIFICANT
+
+#for the trial data, what would happen if we compared means of equal sample sizes
+stream_gb <- stream_df_trial %>%
+  filter(group == "B")
+
+#lets create a subset of just females and males to play with
+stream_gb_male <- stream_gb %>%
+  filter(gender =="M")
+
+stream_gb_female <- stream_gb %>%
+  filter(gender =="F")
+
+n_data_m <- nrow(stream_gb_male) #creates a vector the size of the male population
+n_data_f <- nrow(stream_gb_female) #creates a vector the size of the female population
+
+#29 female entries vs 91 males, what if the odds where evened up
+
+#set a random seed for reproducability
+set.seed(123)
+
+#create a vector of incidices which is 80% of the sample.  This will create a vector of length equivalent to the training data size and fill it with random indices to select data from later.
+bias_indicies <- sample(1:n_data_m, n_data_f)
+
+#subset the male data
+stream_df_gb_corr <- stream_gb_male[bias_indicies,] %>%
+  distinct()
+
+#lets create just the A group for the test period
+
+stream_df_trialA <- stream_df_trial %>%
+  filter(group == "A")
+
+stream_df_gb_B <- rbind(stream_df_gb_corr,stream_gb_female) #to compare male vs female group b
+
+stream_df_gb <- rbind(stream_df_gb_corr,stream_gb_female, stream_df_trialA) #we now have a new dataset during the trial period, with a smaller group of males.  We can now compare group A and group B at a later stage when we come to answer the business question.
+
+
+
+```
+
+```{r}
+#original data
+stream_df_trialB <- stream_df_trial %>%
+  filter(group == "B")
+
+ggplot(stream_df_trialB, aes(x = gender, y = hours_watched)) +
+  geom_boxplot(fill = fillbox, colour = linebox) +
+  labs(x="Gender", y="Hours Watched") +
+  ggtitle("Box Plot of hours watched - By Gender after the trial Group B") +
+  theme_bw() +
+  geom_jitter()
+
+
+#modified data
+ggplot(stream_df_gb_B, aes(x = gender, y = hours_watched)) +
+  geom_boxplot(fill = fillbox, colour = linebox) +
+  labs(x="Gender", y="Hours Watched") +
+  ggtitle("Box Plot of hours watched - By Gender after the trial Group B Gender Bias corrected") +
+  theme_bw() +
+  geom_jitter()
+```
+
+# Key Bias summary
+In exploring the data
+DATE BIAS - We are only comparing the analysis within the testing period
+GENDER BIAS - We have two data sets to understand, one randomly matched to equal gender proportions and one as per the original data set.
+
+# Preliminary Review, Step 5 -  Review of the key data
+Lets be more specific and consider the key question, and compare the mean diffence between the two groups.  Graphically lets explore the entire population before we have accounted for our two key bias areas. 
+
+```{r}
+
+ggplot(stream_df, aes(x=hours_watched, y=..density..)) +
+  geom_histogram(fill="orange", colour="grey", binwidth = 0.10) +
+  labs(title="Histogram of hours watched - Total Dataset", x="Hours Watched", y="Density")
+
+#Likewise, lets consider the modified date set at the difference between the two groups individually using facet wrap
+
+ggplot(stream_df10, aes(x=hours_watched, y=..density..)) +
+  geom_histogram(fill="orange", colour="grey", binwidth = 0.10) +
+  facet_wrap(~group) +
+  geom_density(alpha=.2, fill="#FF6666") +
+  labs(title="Histogram of hours watched - Group Focus, Aligned Dates", x="Hours Watched", y="Density")
+
+ggplot(stream_df10, aes(x=hours_watched, y=..density.., fill = group)) +
+  geom_histogram(position="identity", alpha=0.8, binwidth = 0.10, colour = "grey") +
+  labs(title="Histogram of hours watched - Group Overlay, Aligned Dates", x="Hours Watched", y="Density")
+```
+
+# Preliminary Review, Step 6 -  Review of the key data, statistical insights
+- We are looking in principle to see if there is a mean difference between the two sets.  Without consideration of bias or outliers, what does the data tell us.  For the case of analysis we will assume that the population statistics is the total data package.  
+
+```{r}
+#Preliminary Statistics from library(qwraps2)
+mciall <- mean_ci(stream_df$hours_watched)
+mciA <- mean_ci(streamA_df$hours_watched)
+mciB <- mean_ci(streamB_df$hours_watched)
+print(paste('The BASE Data mean data is'))
+print(paste('Population Mean'))
+print(mciall, show_level = TRUE)
+print(paste('Group A Mean'))
+print(mciA, show_level = TRUE)
+print(paste('Group B Mean'))
+print(mciB, show_level = TRUE)
+```
+
+```{r}
+#lets create some variables for our understanding later, comparing the two groups.
+nA <- length(streamA_df$hours_watched)
+nB <- length(streamB_df$hours_watched)
+meanAll <- mean(stream_df$hours_watched)
+meanA <- mean(streamA_df$hours_watched)
+meanB <- mean(streamB_df$hours_watched)
+sdAll <- sd(streamA_df$hours_watched)
+sdA <- sd(streamA_df$hours_watched)
+sdB <- sd(streamB_df$hours_watched)
+print(paste('The Population Mean is: ',round(meanAll,2),' the Group A mean is: ',round(meanA,2), ' and the Group B mean is: ',round(meanB,2)))
+print(paste('The Population sd is: ',round(sdAll,2),' the Group A sd is: ',round(sdA,2), ' and the Group B sd is: ',round(sdB,2)))
+
+```
+
+Lets just focus on the dates for the trial, and include all genders.
+
+```{r}
+stream_df_trial <- stream_df
+stream_df_trial$date <- as.Date(stream_df_trial$date, format = "%d/%m") #allows filtering by date
+
+stream_df_trial <- stream_df_trial %>%
+  filter(date >= as.Date('2020-07-18')) #filter for know date, as per chart.
+
+stream_df_trial_males <- stream_df_trial %>%
+  filter(gender == "M")
+
+stream_df_trial_females <- stream_df_trial %>%
+  filter(gender == "F")
+```
+
+
+On the face of it with a 95% confidence level there appears to be a difference between the means. What would ANOVA tell us
+
+A box plot will help us to understand this graphically.
+
+```{r}
+fillbox <- "#4271AE"
+linebox <- "#1F3552"
+
+ggplot(stream_df_trial, aes(x = group, y = hours_watched)) +
+  geom_boxplot(fill = fillbox, colour = linebox) +
+  labs(x="Group", y="Hours Watched") +
+  ggtitle("Box Plot of hours watched - Data (Trial Period)") +
+  labs(x="Group", y="Hours Watched") +
+  theme_bw() +
+  geom_jitter()
+
+ggplot(stream_df_gb, aes(x = group, y = hours_watched)) +
+  geom_boxplot(fill = fillbox, colour = linebox) +
+  labs(x="Group", y="Hours Watched") +
+  ggtitle("Box Plot of hours watched - Data (Trial Period), Gender Bias Adjusted") +
+  labs(x="Group", y="Hours Watched") +
+  theme_bw() +
+  geom_jitter()
+
+```
+
+
+# Preliminary Review, Step 7 -  Review of the key data, ANOVA and sample size
+Firstly, do we think the sample size is of statistical importance.  Using the standard deviation of the population (assumed to be Group A) we can compare with a consideration to an effective error where we will use the effect size as the effect of the difference between the mean of the control/treated group A and the mean of the population as mentioned earlier, we have treated the population as the total group.
+
+```{r}
+z_alpha <- qnorm(0.975)
+effect_est <- meanAll - meanB #size of the effect is equivalent to the difference of means
+sd_est <- sdB
+n_ss <- ceiling((z_alpha * sd_est / effect_est)^2)
+print(paste('Min sample size', n_ss))
+```
+
+This suggests that we have enough information to make an insight that would be statistically meaningful twhen comparing the means. We will need to keep this in mind when considering potential effects variables may have on the measured population.
+When considering the means between groups A and B, we need to determine whether or not the groups are normally distributed.  The previous histograms suggest they are, but lets use some analysis to confirm this across the three groups we have, Population, Group A and Group B. In this case we can use the Shapiro-Wilk test and for differences in variance the Levene Test.
+
+```{r}
+#lets consider the variation
+shapiro.test(stream_df_trial$hours_watched)
+leveneTest(hours_watched~group, data=stream_df_trial, center=mean)
+
+#The Trial Data is assumed to come from normal distribution since the p-value of the Shapiro-Wilk test is greater than 0.05; additionally, variances are not different according to Levene’s test (p-value greater than 0.05).  Graphically this looks like
+
+stream_df_trial$hours_watched %>% qqPlot(dist="norm")
+
+```
+
+The above confirms that the data is suitably normal as for all groups p >0.05.  Additionally we find that the p-value for the Levenes test of equal variance is >0.05 therefore we fail to reject Ho and can consider the data as having equal variance.
+
+Lets look at a single factor anova, comparing the means of the two groups A vs B, are they statistically different.  In this case the null hypothesis is that the means of the two groups A, and B are the same, and the alternate hypothesis is that they are different.
+
+# Scenario 1 - Total Means NOT adjusted for gender bias
+
+```{r}
+results <- aov(hours_watched~group, data=stream_df_trial)
+summary(results)
+
+```
+
+The p-value is low so we fail to reject the null hypothesis, the means are different.
+
+# Scenario 2 - Total Means adjusted for gender bias
+
+```{r}
+results <- aov(hours_watched~group, data=stream_df_gb)
+summary(results)
+
+```
+
+The p-value is low so we fail to reject the null hypothesis, the means are different, even adjusted for gender bias
+
+# SUMMARY
+The results indicate that we can reject the null hypothesis and conclude that there is infact a difference between the two means.  How would this be presented to a client, as the preliminary insights generated above note bias in gender, age, demographic and social metric.  What we would like to do is come up with a model to predict the outcome, potentially this would allow targeted marketing and a mutual win for both parties.  How can we consider a better understanding of the results that may warrant more targeted AB testing.
+
+# Insight Deep Dive Review  
+
+Having understood the data, where can we dig further to understand our interpretation of the results.
+
+We have answered the customers question in principle, but how do we now and insight and direction.  The One Way Anova has confirmed that there is a difference between the two means, but with this data we may be able to offer some insight as to how they can potentially target their most ideal demographic or even where they are week and conduct market research to determine how to get incremental growth, which could be in the form of different media.
+
+We have established previously with the ggpairs, skimr and datasummary tools that there are some potential bias in 
+
+1. GENDER with 29 females and 91 males in Group B (Bias Corrected, with a random sample matching gender proportions)
+
+2. AGE has a higher mean and IQR for Group B, and what appears to be a visual bias to an older demographic
+
+4. DEMOGRAPHIC  shows a potential correlation and dependence to age
+
+5. SOCIAL METRIC shows a potential bias to certain demographs across each group
+
+6. TIME SINCE STARTUP no real correlation or influence.
+
+# FEATURE ENGINEERING AND VALUE ADD
+What insights can we determine from the population both before and after the trial.  We have insights into the above, Lets create some basic insights to better understand this information, with the view to provide a predictive model, i.e. how can the customer be more targeted with campaigns, to get more hours watched.
+
+# Regression Tree
+Without stepping too far down the machine learning path, what can using a regression tree tell us about a logical split in the data.
+
+```{r}
+#training set vs data set.  Typically to do this as we may want to compare the outcome to a regression (linear) analysis is to split the data into a training and test set.  80% is a normal split.
+
+n_data <- nrow(stream_df) #how many rows in the data
+n_train <- round(0.8 * n_data) # define length of training set
+#set a random seed for reproducability
+set.seed(123)
+
+#create a vector of incidices which is 80% of the sample.  This will create a vector of length equivalent to the training data size and fill it with random indices to select data from later.
+train_indicies <- sample(1:n_data, n_train)
+
+stream_df10 <- stream_df %>%
+  select(-c(date,group))
+
+#subset the data
+stream_df_train <- stream_df10[train_indicies,]
+#exclude the training indices to create the test set
+stream_df_test <- stream_df10[-train_indicies,]
+
+#train a classification treee
+#formula = response~ predictor variables
+stream_df_model <- rpart(formula = hours_watched ~.,
+                         data = stream_df_train,
+                         method = "anova")
+
+#what is the output of the regression, with hours_watched across all variables.  The original plot had the date in it which doesn't add to the output.  Data changed.
+rpart.plot(x = stream_df_model, yesno = 2)
+
+
+#looking at the population data, key influencers are age and then social metric, where any age < 26 is a key group, and then under 38 being influenced by the social metric.  Essentially anyone over the age of 48 is not a big subscriber to the business.
+
+
+```
+
+Regression Tree Insights
+
+Without any modifications to any hyper parameters, the natural split for the data shows that age is a large influencer and social metric.  With age above 38 being a key influencer for predicting average hours watched. Additionally there appears to be a second primary influencer social metric that has a driver on hours watched across both the young and old age bracket.
+
+
+
+```{r}
+#we now have a prediction model, how can we cross validate to determine whether or not we have accuracy
+pred <- predict(object = stream_df_model, 
+                newdata = stream_df_test)
+library(Metrics)
+rmse(actual = stream_df$hours_watched,
+     predict = pred)
+
+plotcp(stream_df_model) #shows very little depth required to converge on complexity.  Increasing depth provides no real accuracy/complexity benefits
+
+#the outcome is a variation of 1.6 out of a mean of about 4.5 which shows some variability.  It does quickly highlight however the appropriate splits of information and key decision points which is consistent with the stasticial break down illustrated earlier.
+```
+
+Lets consider the same for the trial period only, how does the prediction change
+
+```{r}
+#training set vs data set.  Typically to do this as we may want to compare the outcome to a regression (linear) analysis is to split the data into a training and test set.  80% is a normal split.  
+
+#lets make a new dataset for just the trial period, group B
+
+stream_df_trialB <- stream_df_trial %>%
+  filter(group == 'B')
+
+n_data <- nrow(stream_df_trialB) #how many rows in the data set, this time trial period
+n_train <- round(0.8 * n_data) # define length of training set
+#set a random seed for reproducability
+set.seed(123)
+
+#create a vector of incidices which is 80% of the sample.  This will create a vector of length equivalent to the training data size and fill it with random indices to select data from later.
+train_indicies <- sample(1:n_data, n_train)
+
+stream_df20 <- stream_df_trialB %>% #create a new df for the trial period
+  select(-c(date, group)) 
+ 
+#subset the data
+stream_df_train <- stream_df20[train_indicies,]
+#exclude the training indices to create the test set
+stream_df_test <- stream_df20[-train_indicies,]
+
+#train a classification treee
+#formula = response~ predictor variables
+stream_df_model <- rpart(formula = hours_watched ~.,
+                         data = stream_df_train,
+                         method = "anova")
+
+#what is the output of the regression, with hours_watched across all variables.  The original plot had the date in it which doesn't add to the output.  Data changed.
+rpart.plot(x = stream_df_model, yesno = 2)
+
+```
+
+
+```{r}
+#we now have a prediction model, how can we cross validate to determine whether or not we have accuracy
+pred <- predict(object = stream_df_model, 
+                newdata = stream_df_test)
+library(Metrics)
+rmse(actual = stream_df_trialB$hours_watched,
+     predict = pred)
+
+plotcp(stream_df_model) #shows very little depth required to converge on complexity.  Increasing depth provides no real accuracy/complexity benefits
+
+#the outcome is a variation of 1.6 out of a mean of about 4.5 which shows some variability.  It does quickly highlight however the appropriate splits of information and key decision points which is consistent with the stasticial break down illustrated earlier.
+```
+
+
+Lets further investigate any correlation between Age and Demographic
+
+```{r}
+#AGE VS DEMOGRAPHIC first lets review the correlation
+
+cor(stream_df$demographic,stream_df$age)
+
+ggplot(stream_df, aes(x = age, y = demographic)) + 
+  geom_jitter(fill = fillbox, colour = linebox) +
+  labs(x="Age", y="Demographic") +
+  ggtitle("Demographic vs Age") +
+  theme_bw()
+
+#clearly there is a behavioural split for the demographic.
+#we can make two groups, young and old
+target <- c("1", "2")
+stream_df_young <- stream_df %>%
+  filter(demographic %in% target)
+
+target <- c("3", "4")
+stream_df_old <- stream_df %>%
+  filter(demographic %in% target)
+
+# that we have split the data, what is the revised correlation.
+cor(stream_df_young$demographic,stream_df_young$age)
+cor(stream_df_old$demographic,stream_df_old$age)
+#which removes the demographic correlation to age, based on the split. What is the age cut off (35)
+```
+
+Splitting the two groups, lowers the correlation score.
+
+# FEATURE ENGINEERING
+What can we add that might streamline our insights.
+
+```{r}
+#FEATURE ENGINEERING YOUNG OR OLD
+#We now have a cut, lets put in another variable AGE TYPE.  Additionally lets add another variable that provides a factor or score relating the hours watched to the time since signup.
+stream_df_eng <- stream_df %>%
+  mutate(age_type = ifelse(age >=35,'old','young')) %>%
+  mutate(dur_fact = hours_watched/time_since_signup)
+```
+
+How does our regression tree look with this information.
+```{r}
+#training set vs data set
+n_data <- nrow(stream_df)
+n_train <- round(0.8 * n_data) # define length of training set
+#set a random seed for reproducability
+set.seed(123)
+
+#create a vector of incidices which is 80% of the sample.  This will create a vector of length equivalent to the training data size and fill it with random indices to select data from later.
+train_indicies <- sample(1:n_data, n_train)
+
+#originally complex with a worse performing model, and the potential for overfitting, try removing some of these, but simplifying the options by removing some columnes.  The engineered feature duration fact didn't add any additional accuracy.
+stream_df10 <- stream_df_eng %>%
+  select(-c(date,group,age,demographic,time_since_signup,dur_fact))
+
+#subset the data
+stream_df_train <- stream_df10[train_indicies,]
+#exclude the training indices to create the test set
+stream_df_test <- stream_df10[-train_indicies,]
+
+#train a classification treee
+#formula = response~ predictor variables
+stream_df_model <- rpart(formula = hours_watched ~.,
+                         data = stream_df_train,
+                         method = "anova")
+
+#what is the output of the regression, with hours_watched across all variables.  The original plot had the date in it which doesn't add to the output.  Data changed.
+rpart.plot(x = stream_df_model, yesno = 2)
+
+```
+
+This is a slightly different insight, age type and social metric, which is a development of the original set.
+
+How does it perform against the previous model
+
+```{r}
+pred <- predict(object = stream_df_model, 
+                newdata = stream_df_test)
+
+rmse(actual = stream_df$hours_watched,
+     predict = pred)
+```
+
+1.55 vs 1.60 is better, but not by much.
+
+# INSIGHTS
+
+```{r}
+#INSIGHTS
+
+#Lets explore age data
+ggplot() + geom_point(position = position_jitter(width = 0.45,
+                                                 height = 0.45), 
+                      aes(x=stream_df$age,
+                          y=stream_df$hours_watched,
+                          colour=factor(stream_df$group))) +
+    labs(x='Age (years)', y='Hours Watched',colour='Group')
+
+
+#Lets explore gender data
+ggplot() + geom_point(position = position_jitter(width = 0.45,
+                                                 height = 0.45), 
+                      aes(x=stream_df$gender,
+                          y=stream_df$hours_watched,
+                          colour=factor(stream_df$group))) +
+  labs(x='Gender', y='Hours Watched',colour='Group')
+
+#Lets explore time since startup data
+ggplot() + geom_point(position = position_jitter(width = 0.45,
+                                                 height = 0.45), 
+                      aes(x=stream_df$time_since_signup,
+                          y=stream_df$hours_watched,
+                          colour=factor(stream_df$group))) +
+  labs(x='Time Since Startup', y='Hours Watched',colour='Group')
+
+
+#will need to consider social_metric as a factor as well as demographic.  We dont want to change the original data set so we will create new datasets
+stream_df_fct <- stream_df
+streamA_df_fct <- streamA_df
+streamB_df_fct <- streamB_df
+stream_df_fct$social_metric <- factor(stream_df_fct$social_metric)
+streamA_df_fct$social_metric <- factor(streamA_df_fct$social_metric)
+streamB_df_fct$social_metric <- factor(streamB_df_fct$social_metric)
+stream_df_fct$demographic <- factor(stream_df_fct$demographic)
+streamA_df_fct$demographic <- factor(streamA_df_fct$demographic)
+streamB_df_fct$demographic <- factor(streamB_df_fct$demographic)
+
+#We have converted two of the key variables to factors, lets see what we can tell
+fillbox <- "#4271AE"
+linebox <- "#1F3552"
+
+#Demographic
+ggplot(stream_df_fct, aes(x = demographic, y = hours_watched)) +
+  geom_boxplot(fill = fillbox, colour = linebox) + 
+  facet_wrap(~group) +
+  theme_bw() +
+  labs(Title = "Box Plot",x='Demographic', y='Hours Watched') +
+  geom_jitter()
+
+ggplot(stream_df_fct, aes(x = demographic, y = hours_watched, fill = group)) +
+  geom_boxplot() + 
+  labs(Title = "Box Plot",x='Demographic', y='Hours Watched') +
+  theme_bw()
+
+#Age
+ggplot(stream_df_fct, aes(x = factor(age), y = hours_watched)) +
+  geom_boxplot(fill = fillbox, colour = linebox) +
+  facet_wrap(~group) +
+  labs(Title = "Box Plot",x='Age', y='Hours Watched') +
+  theme_bw() +
+  geom_jitter()
+
+ggplot(stream_df_fct, aes(x = factor(age), y = hours_watched, fill = group)) +
+  geom_boxplot() + 
+  labs(Title = "Box Plot",x='Age', y='Hours Watched') +
+  theme_bw()
+
+#Social Metric
+ggplot(stream_df_fct, aes(x = social_metric, y = hours_watched)) +
+  geom_boxplot(fill = fillbox, colour = linebox) + 
+  facet_wrap(~group) +
+  labs(Title = "Box Plot",x='Social Metric', y='Hours Watched') +
+  theme_bw() +
+  geom_jitter()
+
+ggplot(stream_df_fct, aes(x = social_metric, y = hours_watched, fill = group)) +
+  geom_boxplot() + 
+  labs(Title = "Box Plot",x='Social Metric', y='Hours Watched') +
+  theme_bw()
+
+#Gender
+ggplot(stream_df_fct, aes(x = gender, y = hours_watched)) +
+  geom_boxplot(fill = fillbox, colour = linebox) +
+  facet_wrap(~group)+
+  labs(Title = "Box Plot",x='Gender', y='Hours Watched') +
+  theme_bw() +
+  geom_jitter()
+
+ggplot(stream_df_fct, aes(x = gender, y = hours_watched, fill = group)) +
+  geom_boxplot() + 
+  labs(Title = "Box Plot",x='Gender', y='Hours Watched') +
+  theme_bw()
+
+#Young vs OLD
+ggplot(stream_df_eng, aes(x = age_type, y = hours_watched)) +
+  geom_boxplot(fill = fillbox, colour = linebox) +
+  facet_wrap(~group)+
+  labs(Title = "Box Plot", x='Age Type', y='Hours Watched') +
+  theme_bw() +
+  geom_jitter()
+
+ggplot(stream_df_eng, aes(x = age_type, y = hours_watched, fill = group)) +
+  geom_boxplot() + 
+  labs(Title = "Box Plot", x='Age Type', y='Hours Watched') +
+  theme_bw()
+
+```
+
+Additionally when considering which variables where influenced, diverging bar charts give some some indication of where the uptake was.  Considering which where above and below the mean we get.
+
+```{r}
+#COMPARISON TO MEAN B - DEMOGRAPHIC
+stream_df_trial2 <- stream_df_trial %>%
+  filter(group == 'B') %>%
+  group_by(demographic) %>%
+  mutate(mean_hours = mean(hours_watched)) %>%
+  select(demographic, mean_hours) %>%
+  distinct() %>%
+  ungroup() %>%
+  mutate(diff = mean_hours - meanB) %>% #calculated difference, key variable for chart
+  mutate(outcome = ifelse(diff <0,'below','above')) #used to determine effect
+
+ggplot(stream_df_trial2, aes(x=factor(demographic), y=diff)) + 
+  geom_bar(stat='identity', aes(fill=outcome), width=.5)  +
+  scale_fill_manual(name="Hours Watched", 
+                    labels = c("Above Average", "Below Average"), 
+                    values = c("above"="#00ba38", "below"="#f8766d")) + 
+  labs(subtitle="Comparison to Group B Means - DEMOGRAPHIC", 
+       title= "Diverging Bars",
+       x="Demographic",
+       y="Difference of Demographic Variable Mean to Population Mean") +
+       coord_flip()
+```
+
+```{r}
+#COMPARISON TO MEAN B - SOCIAL METRIC
+stream_df_trial3 <- stream_df_trial %>%
+  filter(group == 'B') %>%
+  group_by(social_metric) %>%
+  mutate(mean_hours = mean(hours_watched)) %>%
+  select(social_metric, mean_hours) %>%
+  distinct() %>%
+  ungroup() %>%
+  mutate(diff = mean_hours - meanB) %>% #calculated difference, key variable for chart
+  mutate(outcome = ifelse(diff <0,'below','above')) #used to determine effect
+
+ggplot(stream_df_trial3, aes(x=factor(social_metric), y=diff)) + 
+  geom_bar(stat='identity', aes(fill=outcome), width=.5)  +
+  scale_fill_manual(name="Hours Watched", 
+                    labels = c("Above Average", "Below Average"), 
+                    values = c("above"="#00ba38", "below"="#f8766d")) + 
+  labs(subtitle="Comparison to Group B Means - SOCIAL METRIC", 
+       title= "Diverging Bars",
+       x="Social Metric",
+       y="Difference of Social Metric Variable Mean to Population Mean") +
+  coord_flip()
+
+```
+
+```{r}
+#COMPARISON TO MEAN B - GENDER
+stream_df_trial4 <- stream_df_trial %>%
+  filter(group == 'B') %>%
+  group_by(gender) %>%
+  mutate(mean_hours = mean(hours_watched)) %>%
+  select(gender, mean_hours) %>%
+  distinct() %>%
+  ungroup() %>%
+  mutate(diff = mean_hours - meanB) %>%
+  mutate(outcome = ifelse(diff <0,'below','above'))
+
+ggplot(stream_df_trial4, aes(x=factor(gender), y=diff)) + 
+  geom_bar(stat='identity', aes(fill=outcome), width=.5)  +
+  scale_fill_manual(name="Hours Watched", 
+                    labels = c("Above Average", "Below Average"), 
+                    values = c("above"="#00ba38", "below"="#f8766d")) + 
+  labs(subtitle="Comparison to Group B Means - GENDER", 
+       title= "Diverging Bars",
+       x="Gender",
+       y="Difference of Gender Variable Mean to Population Mean") +
+  coord_flip()
+
+```
+
+
+What we can observe from both the Regression Tree and the box plots is that there is a relationship between age, demographic, social metric and hours watched.  What we can assume is that the demographic variable is linked to age and rule it out for any kind of regression/estimation.  Previously we have also determined that a statisitcal sample size of 39 would be required to determine suitable groups for further evaluation.  Can we confirm the suitability of breaking down these areas into smaller groups for analysis later, possibly for future AB trials
+
+```{r}
+age_tally <- stream_df %>%
+  group_by(age) %>%
+  tally()
+
+social_tally <- stream_df %>%
+  group_by(social_metric) %>%
+  tally()
+
+age_tally %>%
+  kable() %>%
+  kable_styling()
+
+social_tally %>%
+  kable() %>%
+  kable_styling()
+
+```
+
+
+# LINEAR REGRESSION
+
+Now that we have found two parameters that look likely to have an effect hours watched, let's perform a single regression first and then a regression analysis.
+
+```{r}
+lr_model <- lm(hours_watched ~ age, data=stream_df)
+
+# contains coeff [1]=intercept, [2]=slope; find with coef(fit)[1]
+summary(lr_model)
+```
+
+
+```{r}
+#MULTIPLE REGRESSION
+
+mr_model <- lm(hours_watched ~ age + social_metric, data=stream_df)
+
+# contains coeff [1]=intercept, [2]=slope; find with coef(fit)[1]
+summary(mr_model)
+```
+
+Lets performn an ANOVA test comparing the outcomes.
+
+```{r}
+# perform anova test
+anova(lr_model, mr_model)
+```
+
+The anova shows us that there is a statistical significance between the two and adding the second variable improves the regression accuracy.
+
+Visually our Single Regression Model Looks like 
+
+```{r}
+ggplot(stream_df, aes(x = factor(age), y = hours_watched)) +
+  geom_jitter() +
+  labs(subtitle="Age vs Hours Watched", 
+       title= "Regression Analysis",
+       x="Age",
+       y="Hours Watched")
+
+
+ggplot(stream_df, aes(x = factor(age), y = hours_watched, colour = factor(social_metric))) +
+  geom_jitter() + 
+  labs(subtitle="Age vs Hours Watched", 
+       title= "Regression Analysis",
+       x="Age",
+       y="Hours Watched",
+       colour = "Social Metric")
+
+#determine the coefficients for plotting
+a0 <- coef(lr_model)[1]
+a1 <- coef(lr_model)[2]
+
+# setup x variable with range of interest
+xfit1 <- seq(min(stream_df$age), max(stream_df$age), 1)
+
+# calculate the fitting function yfit based on the coefficients from the model
+yfit1 <- a0 + a1*xfit1
+
+ggplot() +
+  geom_jitter(aes(x = stream_df$age, y = stream_df$hours_watched)) +
+  geom_line(aes(x=xfit1, y=yfit1), colour='red') +
+  labs(subtitle ="Regression Analysis, Single Regression", 
+       title= "Regression Analysis - Line of Best Fit",
+       x='Age', y='Hours Watched')
+
+#lets calculate the residuals
+# fit to each value of x
+stream_df_res <- stream_df %>%
+  select(age, hours_watched)
+stream_df_res$f1 <- a0 + a1*stream_df_res$age
+
+# calculate the residual
+stream_df_res$e1 <- stream_df_res$hours_watched - stream_df_res$f1
+
+ggplot() + geom_jitter(aes(x=stream_df_res$age, y=stream_df_res$e1)) +
+  labs(x='age', y='residual',
+       subtitle="Residual Analysis", 
+       title= "Regression Analysis - Residuals")
+
+#We can also check that they are normally distributed.
+qqnorm(stream_df_res$e1)
+qqline(stream_df_res$e1, col = 2)
+
+```
+
+For regression analysis the key assumptions are
+Independence
+Linearity - There is a definite linear trend for the charts above
+Normality of residuals - The Q-Q plot shows a normal trend
+Homoscedasticity -  The residual analyis visually suggests Homoscedasticity
+
+The final relationship for the regression is a moderate negative trend.
+
+# SUMMARY
+Opportunities
+
+Areas to focus is age group.  Your population is very age biased, and the results of the test have done little to change this.  Using the algorithm across all age groups shouldn’t affect the outcome, but there is a key understanding about future marketing opportunities to drive growth here.  This is also supported by the uplift in means of the demographic variable which is highly dependent on age.
+Our machine learning algorithm and regression analysis have identified this as a key variable for predicting hours watched across your population.
+
+Similarly, Gender appears to be neutral providing a positive uplift in the outcome across both genders.
+
+Key Risk
+
+Social Metric, there appears to be a downturn in some of these areas.   Our machine learning algorithm and regression analysis have identified this as a key variable for predicting hours watched across your population.
+
+Predictive Analytics
+
+We have moved into the predictive analytics approach and based on our analysis have come up with some key indicators, Age and Social Metric has being two key influencers on predicting the outcome of your data.  
+

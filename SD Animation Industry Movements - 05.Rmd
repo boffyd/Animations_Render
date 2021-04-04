@@ -1,0 +1,374 @@
+---
+title: "APM Industry Movements"
+author: "Ian Denness"
+date: "29/03/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#load libraries
+library(tidyverse)
+library(gganimate)
+library(plotly) #includes ggplot and dplyr
+library(forcats)
+library(janitor)
+library(shiny)
+library(gifski) #used for rendering output for animate (gifs)
+library(av) #used for saving outputs
+library(skimr)
+#library(gapminder)
+library(lubridate) #isoweek
+```
+
+## Industry Movements
+
+An analysis of the job placement movements within industry for APM.
+
+#Dataset Loading
+Data set as provided by the client.  The dataset is relatively clean, and requires no modification.
+
+```{r}
+#clear the environment 
+rm(list=ls())
+
+#import dataset
+#file_name <- 'Covid_19Trends.csv' #this was the original data set with different names and measured weekly
+file_name <- '2020 Labour Market Trends 2.csv'
+indus_df1 = read.table(file_name, sep=",", header = TRUE)
+#clean names
+
+indus_df1 <- indus_df1 %>%
+  clean_names()
+
+indus_df1 <- indus_df1 %>%
+  mutate(month_no = case_when(month == 'January' ~ 1,
+                             month == 'February' ~ 2,
+                             month == 'March' ~ 3,
+                             month == 'April' ~ 4,
+                             month == 'May' ~ 5,
+                             month == 'June' ~ 6,
+                             month == 'July' ~7))
+
+#order the factor for arranging and plotting later
+
+indus_df1$month <- factor(indus_df1$month, levels = c('January',
+                                                      'February',
+                                                      'March',
+                                                      'April',
+                                                      'May',
+                                                      'June',
+                                                      'July'))
+
+indus_df3 <- indus_df1
+```
+
+
+
+
+```{r}
+
+#rank is introduced and typically used for real number comparison, however with an integer, it is likely that we will have overlapping or the same, rank, we then create relative ranks based on how it sits in the grouping to simplify the animation.  This is rank_final.
+
+
+#lets set up a cumulative sum by month to see how this looks for the animation.  We need to group by industry, and then order by industry and then week nong
+
+indus_df1 <- indus_df1 %>%
+  group_by(industry) %>% 
+  arrange(industry, month) %>% 
+  mutate(vac_cum = cumsum(vacancies)) %>% 
+  ungroup()
+
+#WE HAVE TWO OPTIONS HERE, they have to be changed in the dataframe rank, and passed to the plot
+# PASS -vacancies
+# PASS -vac_cum
+
+indus_df1 <- indus_df1 %>%
+  group_by(month) %>%
+  mutate(rank = rank(-vac_cum,ties.method="min")) %>%
+  arrange(desc(rank)) %>%
+  mutate(rank_final = as.double(rev(seq(12:1))) * 1.0) %>%
+  ungroup() %>%
+  arrange(month,industry)
+
+```
+
+```{r}
+#lets add ladder points to accumulate
+indus_df1 <- indus_df1 %>%
+  mutate(points = case_when(rank_final == 12 ~ 1,
+                            rank_final == 11 ~ 2,
+                            rank_final == 10 ~ 3,
+                            rank_final == 9 ~ 4,
+                            rank_final == 8 ~ 5,
+                            rank_final == 7 ~ 6,
+                            rank_final == 6 ~ 7,
+                            rank_final == 5 ~ 8,
+                            rank_final == 4 ~ 9,
+                            rank_final == 3 ~ 10,
+                            rank_final == 2 ~ 11,
+                            rank_final == 1 ~ 12)) %>%
+  group_by(month,industry) %>%
+  arrange(month) %>%
+  mutate(final_points = cumsum(points))
+
+```
+
+
+```{r}
+#Lets add a column to define the fill colours
+indus_df1 <- indus_df1 %>%
+  mutate(idcheck = case_when(industry == 'Health Care and Social Assistance' ~ 'N',
+                             industry == 'Retail Trade' ~ 'N',
+                             industry == 'Manufacturing' ~ 'N',
+                             industry == 'Information, Media and Telecommunications' ~ 'N',
+                             industry == 'Administrative and Support Services' ~ 'N',
+                             industry == 'Accommodation and Food Services' ~ 'N',
+                             industry == 'Professional, Scientific, Technical Services' ~ 'N',
+                             industry == 'Transport, Postal and Warehousing' ~ 'Y',
+                             industry == 'Construction' ~ 'Y',
+                             industry == 'Education and Training' ~ 'Y',
+                             industry == 'Public Administration and Safety' ~ 'Y',
+                             industry == 'Financial and Insurance' ~ 'Y'))
+
+```
+
+
+```{r}
+indus_df1 <- indus_df1 %>%
+  group_by(month) %>%
+  mutate(rank = rank(-final_points,ties.method="min")) %>%
+  arrange(desc(rank)) %>%
+  mutate(rank_final = as.double(rev(seq(12:1))) * 1.0) %>%
+  ungroup() %>%
+  arrange(vac_cum, month)
+```
+
+```{r}
+indus_df2 <- indus_df1 %>%
+  group_by(month,industry) %>%
+  mutate(pts = max(final_points)) %>%
+  ungroup() %>%
+  distinct(month, industry, pts)
+```
+
+
+```{r}
+#we need to re-rank for our visualisation
+indus_df2 <- indus_df2 %>%
+  group_by(industry) %>%
+  mutate(final_points = cumsum(pts)) %>%
+  ungroup() %>%
+  group_by(month) %>%
+  mutate(rank = rank(-pts,ties.method="min")) %>%
+  arrange(desc(rank)) %>%
+  mutate(rank_final = as.double(rev(seq(12:1))) * 1.0) %>%
+  ungroup()
+```
+
+```{r}
+#Lets add a column to define the fill colours
+indus_df2 <- indus_df2 %>%
+  mutate(idcheck = case_when(industry == 'Health Care and Social Assistance' ~ 'N',
+                             industry == 'Retail Trade' ~ 'N',
+                             industry == 'Manufacturing' ~ 'N',
+                             industry == 'Information, Media and Telecommunications' ~ 'N',
+                             industry == 'Administrative and Support Services' ~ 'N',
+                             industry == 'Accommodation and Food Services' ~ 'N',
+                             industry == 'Professional, Scientific, Technical Services' ~ 'N',
+                             industry == 'Transport, Postal and Warehousing' ~ 'Y',
+                             industry == 'Construction' ~ 'Y',
+                             industry == 'Education and Training' ~ 'Y',
+                             industry == 'Public Administration and Safety' ~ 'Y',
+                             industry == 'Financial and Insurance' ~ 'Y'))
+```
+
+```{r}
+indus_df1 <- indus_df2
+
+indus_df1 <- indus_df1 %>%
+  mutate(month_no = case_when(month == 'January' ~ 1,
+                             month == 'February' ~ 2,
+                             month == 'March' ~ 3,
+                             month == 'April' ~ 4,
+                             month == 'May' ~ 5,
+                             month == 'June' ~ 6,
+                             month == 'July' ~7))
+```
+
+We now have a base data set for analysis.
+
+
+#Animation Plot
+
+
+```{r}
+#define fill colours
+fillblue <- 'dodgerblue2'
+fillorange <- 'orange1'
+
+pp1 <- ggplot(indus_df1, aes(group = industry, fill = idcheck)) +
+  
+  geom_tile(aes(x = rank_final, y = final_points/2, height = final_points, width = 0.9), alpha = 0.8, colour = NA) +
+  
+  scale_fill_manual(values = c('Y' = fillorange,'N' = fillblue),
+                    guide = FALSE) +
+
+#this geom_text locates the moving axis total.  The largest vacancy number is 9, alt. you can use y = vacancies to put at the end of teh bar chart however this isn't always possible.
+  geom_text(aes(x = rank_final, y = max(final_points,4), label = industry), vjust = 0.2, hjust = 1) + #positions text at the y value (remember this is flipped for simplicity)
+  
+  coord_flip() +
+  scale_y_continuous(labels = scales::comma) +
+  theme_minimal() + 
+  scale_x_reverse() + #put rank 1 at the top
+  guides(color = FALSE, fill = FALSE) +
+  
+  #gganimate specific items {closest_state} for numbers, {frame_time} for dates
+  labs(subtitle = 'Australian Industry Vacancies, Month : {closest_state}',
+       title='Impact of COVID 19 - Job Vacancies', 
+       x = 'Industry', 
+       y = 'Cumulative Vacancies',
+       caption = 'Source: APM Job Screening Database') +
+  theme(plot.title = element_text(hjust = 0, size = 22),
+        axis.ticks.y = element_blank(),  # axes post-flip
+        axis.text.y  = element_blank(),  # axes post-flip
+        axis.text.x  = element_blank()) +
+
+  #use transition_time for dates, and transition_states for numbers
+  
+  transition_states(month_no, transition_length = 5, #1/4 of the time for transition
+                    state_length = 1) + #3/4 of the time for the state length
+  enter_grow() +
+  exit_shrink() +
+  ease_aes('linear')
+
+```
+
+#Run the Animations
+
+```{r}
+pp1
+
+```
+
+#Create GIFs for export
+
+```{r Animate Key Animation}
+#running the below code should limit the looping of the GIF (original nframes = 200).  an use renderer = gifski_renderer(loop = FALSE) to limit looping.
+ppout <- animate(pp1,nframes = 500, fps = 10, renderer = gifski_renderer())
+anim_save("New Data3.gif", ppout)
+
+```
+
+#Create GIF with end pause
+
+```{r}
+ppout <- animate(pp1,nframes = 200,
+                 fps = 10,
+                 renderer = gifski_renderer(),
+                 end_pause = 30)
+
+anim_save("New Data4.gif", ppout)
+
+```
+
+```{r}
+indus_df3 <- indus_df3 %>%
+  mutate(idcheck = case_when(industry == 'Health Care and Social Assistance' ~ 'N',
+                             industry == 'Retail Trade' ~ 'N',
+                             industry == 'Manufacturing' ~ 'N',
+                             industry == 'Information, Media and Telecommunications' ~ 'N',
+                             industry == 'Administrative and Support Services' ~ 'N',
+                             industry == 'Accommodation and Food Services' ~ 'N',
+                             industry == 'Professional, Scientific, Technical Services' ~ 'N',
+                             industry == 'Transport, Postal and Warehousing' ~ 'Y',
+                             industry == 'Construction' ~ 'Y',
+                             industry == 'Education and Training' ~ 'Y',
+                             industry == 'Public Administration and Safety' ~ 'Y',
+                             industry == 'Financial and Insurance' ~ 'Y'))
+
+indus_df3 <- indus_df3 %>%
+  mutate(month_no = case_when(month == 'January' ~ 1,
+                             month == 'February' ~ 2,
+                             month == 'March' ~ 3,
+                             month == 'April' ~ 4,
+                             month == 'May' ~ 5,
+                             month == 'June' ~ 6,
+                             month == 'July' ~7))
+
+
+
+```
+
+```{r}
+indus_df3 <- indus_df3 %>%
+  mutate(indust = case_when(industry == 'Health Care and Social Assistance' ~ 'Health',
+                            industry == 'Retail Trade' ~ 'Retail',
+                            industry == 'Manufacturing' ~ 'Manuf.',
+                            industry == 'Information, Media and Telecommunications' ~ 'IT',
+                            industry == 'Administrative and Support Services' ~ 'Admin.',
+                            industry == 'Accommodation and Food Services' ~ 'Hospitality',
+                            industry == 'Professional, Scientific, Technical Services' ~ 'Prof Serv.',
+                            industry == 'Transport, Postal and Warehousing' ~ 'Transp.',
+                            industry == 'Construction' ~ 'Constr.',
+                            industry == 'Education and Training' ~ 'Education',
+                            industry == 'Public Administration and Safety' ~ 'Security',
+                            industry == 'Financial and Insurance' ~ 'Finance'))
+```
+
+
+
+```{r}
+#ANIMATION 2 MOVING LINE CHART
+
+#create animation
+
+pp2A <- ggplot(indus_df3, 
+               aes(x = as.factor(month_no), y = vacancies, group = indust)) +
+  theme(axis.text.y=element_blank()) +  
+  geom_line(aes(colour = indust)) +
+  
+ scale_colour_manual(values = c('Health' = fillorange,
+                                 'Retail' = fillorange,
+                                 'Manuf.' = fillorange,
+                                 'IT' = fillorange,
+                                 'Admin.' = fillorange,
+                                 'Hospitality' = fillorange,
+                                 'Prof Serv.' = fillblue,
+                                 'Transp.' = fillblue,
+                                 'Constr.' = fillblue,
+                                 'Education' = fillblue,
+                                 'Security' = fillblue,
+                                 'Finance' = fillblue), 
+                      guide = FALSE) +
+  
+  geom_segment(aes(xend = max(month_no), yend = vacancies), linetype = 2, colour = 'grey') +
+  geom_point(size = 5, aes(colour = indust)) + 
+  geom_text(aes(x = max(month_no), label = indust), hjust = 0) + 
+
+  transition_reveal(month_no) + 
+  coord_cartesian(clip = 'off') + 
+  labs(subtitle = 'Australian Industry Vacancies',
+       title ='Impact of COVID 19 - Job Vacancies',
+       x = 'Month',
+       y = 'Montly Job Vacancies (qty)',
+       caption = 'Source: Konekt Job Screening Database') +
+    theme(plot.title = element_text(hjust = -1, size = 22)) +
+  theme_minimal() + 
+  theme(plot.margin = margin(5.5, 40, 5.5, 5.5))
+
+#pp2A
+```
+
+
+
+```{r}
+pp2A
+```
+
+```{r}
+#running the below code should limit the looping of the GIF (original nframes = 200).  an use renderer = gifski_renderer(loop = FALSE) to limit looping.
+pp2A1 <- animate(pp2A,nframes = 500, fps = 10, renderer = gifski_renderer())
+anim_save("New Data5.gif", pp2A1)
+```
+
